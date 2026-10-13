@@ -6,7 +6,7 @@
 
 ## 1. 物理目标
 
-有 N=20 个二维粒子，位置为 $X=(\mathbf{x}_1,\ldots,\mathbf{x}_N)$，其中$\(\mathbf{x}_i\in\mathbb{R}^2\)$。
+有 N=20 个二维粒子，位置为 $X=(\mathbf{x}_1,\ldots,\mathbf{x}_N)$，其中 $\mathbf{x}_i\in\mathbb{R}^2$。
 
 能量为
 
@@ -218,7 +218,7 @@ $$
 \mathbf{t}_j=\sum_i\alpha_{ji}\mathbf{x}_i.
 $$
 
-这里的 \(\mathbf{x}_i\) 是条件粒子 i 当前的二维坐标向量。alpha_ji 是旋转不变量，而 \(\mathbf{x}_i\) 是旋转向量，所以：
+这里的 $\mathbf{x}_i$ 是条件粒子 i 当前的二维坐标向量。alpha_ji 是旋转不变量，而 $\mathbf{x}_i$ 是旋转向量，所以：
 
 $$
 \mathbf{t}_j(RX_c)
@@ -274,7 +274,7 @@ $$
 
 ### 7.2 径向等变性
 
-因为 \(\|R\mathbf{x}\|=\|\mathbf{x}\|=r\)，所以：
+因为 $\|R\mathbf{x}\|=\|\mathbf{x}\|=r$，所以：
 
 $$
 R_{\rm radial}(R\mathbf{x})
@@ -340,7 +340,7 @@ $$
 F(RX)=RF(X).
 $$
 
-代码中的 inverse_error 检查 \(F^{-1}(F(z))\approx z\)，equivariance_error 检查 \(F(Rz)\approx RF(z)\)。
+代码中的 inverse_error 检查 $F^{-1}(F(z))\approx z$，equivariance_error 检查 $F(Rz)\approx RF(z)$。
 
 ## 9. 训练目标
 
