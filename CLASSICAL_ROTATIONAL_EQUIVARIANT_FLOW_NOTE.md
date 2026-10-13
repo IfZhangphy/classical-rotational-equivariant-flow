@@ -6,7 +6,7 @@
 
 ## 1. 物理目标
 
-有 N=20 个二维粒子，位置为 \(X=(\mathbf{x}_1,\ldots,\mathbf{x}_N)\)，其中 \(\mathbf{x}_i\in\mathbb{R}^2\)。
+有 N=20 个二维粒子，位置为 $X=(\mathbf{x}_1,\ldots,\mathbf{x}_N)$，其中$\(\mathbf{x}_i\in\mathbb{R}^2\)$。
 
 能量为
 
