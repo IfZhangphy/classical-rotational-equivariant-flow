@@ -10,18 +10,18 @@
 
 能量为
 
-\[
+$$
 E(X)=\sum_i\|\mathbf{x}_i\|^2+
 \sum_{i<j}\frac{1}{\sqrt{\|\mathbf{x}_i-\mathbf{x}_j\|^2+\epsilon^2}}.
-\]
+$$
 
 其中 epsilon 是代码中的 distance_floor，用于缓解随机近碰撞造成的极端梯度。它也改变了势能和目标分布，并非仅仅是一个不影响物理结果的数值技巧；与 MCMC 公平比较时必须使用相同 epsilon。
 
 目标经典分布为
 
-\[
+$$
 p_\beta(X)=Z_\beta^{-1}e^{-\beta E(X)},\qquad \beta=1/T.
-\]
+$$
 
 这里的温度是无量纲温度，默认 Boltzmann 常数和能量单位已经吸收到单位制中。低温实验使用 beta=10（T=0.1）；高温实验使用 beta=0.1（T=10）。此前对话称其为“10 K”并不严谨：若没有给出能量尺度，不能把无量纲 T=10 直接解释为物理上的 10 K。若代码能量以 E0 为单位，则物理逆温度为 beta=E0/(k_B*T_K)。
 
@@ -29,9 +29,9 @@ p_\beta(X)=Z_\beta^{-1}e^{-\beta E(X)},\qquad \beta=1/T.
 
 从标准高斯变量开始：
 
-\[
+$$
 z\sim\mathcal N(0,I),\qquad X=F_\theta(z).
-\]
+$$
 
 完整 flow 的数据流是：
 
@@ -51,9 +51,9 @@ z\sim\mathcal N(0,I),\qquad X=F_\theta(z).
 
 数学上：
 
-\[
+$$
 F=R_{L-1}\circ C_{L-1}\circ\cdots\circ R_0\circ C_0.
-\]
+$$
 
 Coupling 提供条件依赖的多粒子变换，Radial 提供直接的非线性半径变换。这是功能侧重点，不是严格分工：coupling 也能改变径向分布，径向层单独不能保证生成多壳层。
 
@@ -92,21 +92,21 @@ Coupling 提供条件依赖的多粒子变换，Radial 提供直接的非线性�
 
 条件组不变：
 
-\[
+$$
 Y_c=X_c.
-\]
+$$
 
 目标粒子执行：
 
-\[
+$$
 \mathbf{y}_j=e^{s_j(X_c)}\mathbf{x}_j+\mathbf{t}_j(X_c).
-\]
+$$
 
 逆变换：
 
-\[
+$$
 \mathbf{x}_j=(\mathbf{y}_j-\mathbf{t}_j(X_c))e^{-s_j(X_c)}.
-\]
+$$
 
 代码逻辑是：
 
@@ -121,15 +121,15 @@ s 和 t 只依赖 condition，不依赖正在被变换的 target，因此逆向�
 
 二维中：
 
-\[
+$$
 (x,y)\mapsto(e^s x+t_x,e^s y+t_y)
-\]
+$$
 
 所以每个目标粒子的 log-det 是 2s。一般维度为 dim 时：
 
-\[
+$$
 \log|\det J_C|=\text{dim}\sum_j s_j.
-\]
+$$
 
 最终代码必须使用：
 
@@ -152,22 +152,22 @@ s 和 t 只依赖 condition，不依赖正在被变换的 target，因此逆向�
 
 它们分别对应：
 
-\[
+$$
 r_i^2=\|\mathbf{x}_i\|^2,
 \qquad
 d_{ik}^2=\|\mathbf{x}_i-\mathbf{x}_k\|^2.
-\]
+$$
 
 整体旋转 R 不改变这些量：
 
-\[
+$$
 \|R\mathbf{x}_i\|^2=\|\mathbf{x}_i\|^2,
-\]
+$$
 
-\[
+$$
 \|R\mathbf{x}_i-R\mathbf{x}_k\|^2
 =\|\mathbf{x}_i-\mathbf{x}_k\|^2.
-\]
+$$
 
 ### 5.2 不变量经过 MLP
 
@@ -189,15 +189,15 @@ pair feature 由 distance2、radius2_i、radius2_k 拼成，随后经过 pair_ml
 
 数学上：
 
-\[
+$$
 s_j=f_s(\{r_i^2\},\{d_{ik}^2\},e_j).
-\]
+$$
 
 因此：
 
-\[
+$$
 s_j(RX_c)=s_j(X_c).
-\]
+$$
 
 s 是旋转不变量。
 
@@ -214,23 +214,23 @@ s 是旋转不变量。
 
 数学上：
 
-\[
+$$
 \mathbf{t}_j=\sum_i\alpha_{ji}\mathbf{x}_i.
-\]
+$$
 
 这里的 \(\mathbf{x}_i\) 是条件粒子 i 当前的二维坐标向量。alpha_ji 是旋转不变量，而 \(\mathbf{x}_i\) 是旋转向量，所以：
 
-\[
+$$
 \mathbf{t}_j(RX_c)
 =\sum_i\alpha_{ji}R\mathbf{x}_i
 =R\mathbf{t}_j(X_c).
-\]
+$$
 
 t 是旋转协变量。于是 coupling 满足：
 
-\[
+$$
 C(RX)=RC(X).
-\]
+$$
 
 ## 7. 径向等变层
 
@@ -238,21 +238,21 @@ C(RX)=RC(X).
 
 对一个粒子位置向量 x，令：
 
-\[
+$$
 r=\|\mathbf{x}\|.
-\]
+$$
 
 定义新的半径：
 
-\[
+$$
 r'=ar+br^2.
-\]
+$$
 
 保持方向不变：
 
-\[
+$$
 \mathbf{y}=\frac{r'}{r}\mathbf{x}=(a+br)\mathbf{x}.
-\]
+$$
 
 这不是分别对 x 坐标、y 坐标平方，而是先求整个向量长度，再沿向量自身方向缩放。
 
@@ -268,49 +268,49 @@ r'=ar+br^2.
 
 它们是该层共享的全局标量，与输入无关，因此自然满足：
 
-\[
+$$
 a(RX)=a,\qquad b(RX)=b.
-\]
+$$
 
 ### 7.2 径向等变性
 
 因为 \(\|R\mathbf{x}\|=\|\mathbf{x}\|=r\)，所以：
 
-\[
+$$
 R_{\rm radial}(R\mathbf{x})
 =(a+br)R\mathbf{x}
 =R(a+br)\mathbf{x}
 =RR_{\rm radial}(\mathbf{x}).
-\]
+$$
 
 ### 7.3 径向可逆性
 
 若 a>0、b>=0，则：
 
-\[
+$$
 \frac{dr'}{dr}=a+2br>0.
-\]
+$$
 
 半径映射单调可逆，逆变换为：
 
-\[
+$$
 r=\frac{-a+\sqrt{a^2+4br'}}{2b}.
-\]
+$$
 
 实现时使用等价但更稳定的形式，避免相近数相减，也兼容 b 趋于零的情形：
 
-\[
+$$
 r=\frac{2r'}{a+\sqrt{a^2+4br'}}.
-\]
+$$
 
 原点的变换是零映射，逆缩放的极限为 1/a。
 
 二维中径向方向的缩放是 a+2br，切向方向的缩放是 a+br，因此：
 
-\[
+$$
 \log|\det J_R|
 =\log(a+2br)+\log(a+br).
-\]
+$$
 
 所有粒子的贡献求和得到该层 log-det。
 
@@ -328,17 +328,17 @@ r=\frac{2r'}{a+\sqrt{a^2+4br'}}.
 
 每个子层都满足旋转等变：
 
-\[
+$$
 C_l(RX)=RC_l(X),
 \qquad
 R_l(RX)=RR_l(X).
-\]
+$$
 
 因此复合映射满足：
 
-\[
+$$
 F(RX)=RF(X).
-\]
+$$
 
 代码中的 inverse_error 检查 \(F^{-1}(F(z))\approx z\)，equivariance_error 检查 \(F(Rz)\approx RF(z)\)。
 
@@ -346,17 +346,17 @@ F(RX)=RF(X).
 
 标准高斯密度：
 
-\[
+$$
 \log p_Z(z)
 =-\frac12\sum_k(z_k^2+\log 2\pi).
-\]
+$$
 
 变量替换：
 
-\[
+$$
 \log p_\theta(X)
 =\log p_Z(z)-\log|\det J_F(z)|.
-\]
+$$
 
 代码：
 
@@ -365,14 +365,14 @@ F(RX)=RF(X).
 
 经典变分自由能：
 
-\[
+$$
 \mathcal F(\theta)
 =
 \mathbb E_{X\sim p_\theta}
 \left[
 E(X)+\frac{1}{\beta}\log p_\theta(X)
 \right].
-\]
+$$
 
 代码：
 
@@ -398,15 +398,15 @@ E(X)+\frac{1}{\beta}\log p_\theta(X)
 
 当前严格保证的是整体旋转等变：
 
-\[
+$$
 F(RX)=RF(X).
-\]
+$$
 
 但还没有严格保证任意粒子置换等变：
 
-\[
+$$
 F(PX)=PF(X).
-\]
+$$
 
 原因是固定 even/odd mask 和按目标位置区分的 target_embedding。当前版本可以探索总密度、径向分布和壳层半径，但聚合图像正确不保证联合分布正确。若要严格描述全同不可区分粒子，必须保证生成密度的置换不变性；permutation-equivariant flow 是一种充分的结构方案，但不是唯一方案。
 
