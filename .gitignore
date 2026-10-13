@@ -1,0 +1,31 @@
+﻿# Python cache
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ipynb_checkpoints/
+
+# Virtual environments
+.venv/
+.venv-*/
+venv/
+env/
+.conda/
+flow/
+
+# Training outputs
+results*/
+rotational_equivariant_results*/
+checkpoints/
+*.npz
+*.ckpt
+
+# Archives and large documents
+*.tar.gz
+*.zip
+*.pdf
+
+# IDE and operating system files
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db

@@ -1,0 +1,7 @@
+# CUDA 12 compatible JAX build. The AutoDL driver supplies the NVIDIA driver.
+jax[cuda12]>=0.5.3
+dm-haiku>=0.0.16
+optax>=0.2.7
+numpy>=1.26
+matplotlib>=3.8
+ipykernel>=6.29
