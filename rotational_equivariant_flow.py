@@ -1,4 +1,4 @@
-"""Resource-aware rotationally equivariant normalizing flow.
+"""Original successful rotationally equivariant normalizing flow.
 
 The model targets a two-dimensional classical Coulomb gas in a harmonic
 potential.  It uses alternating affine coupling layers.  The conditioner
@@ -67,7 +67,14 @@ class Config:
     seed: int = 42
     x64: bool = False
     plot_every: int = 100
-    output_dir: str = "rotational_equivariant_results"
+    output_dir: str = "rotational_equivariant_results_stable"
+    # Average several independent batches before one optimizer update.  This
+    # reduces the variance of the free-energy gradient without changing the
+    # objective or clipping individual energies.
+    microbatches: int = 4
+    validation_size: int = 2048
+    validation_every: int = 250
+    ema_decay: float = 0.98
 
 
 def _layer_indices(n_particles: int, layer: int) -> tuple[tuple[int, ...], tuple[int, ...]]:
@@ -172,15 +179,85 @@ class EquivariantConditioner(hk.Module):
         return scale, shift
 
 
+class RadialQuadraticLayer(hk.Module):
+    """Positive radial map s = a*r + b*r^2 with an analytic inverse."""
+
+    def __init__(
+        self,
+        n_particles: int,
+        dim: int,
+        name: str | None = None,
+    ) -> None:
+        super().__init__(name=name)
+        self.n_particles = n_particles
+        self.dim = dim
+
+    def __call__(
+        self, x: jax.Array, inverse: bool
+    ) -> tuple[jax.Array, jax.Array]:
+        positions = jnp.reshape(x, (self.n_particles, self.dim))
+        log_a = hk.get_parameter(
+            "log_a",
+            shape=(),
+            init=hk.initializers.Constant(0.0),
+        )
+        log_b = hk.get_parameter(
+            "log_b",
+            shape=(),
+            init=hk.initializers.Constant(-8.0),
+        )
+        a = jax.nn.softplus(log_a) + 1e-4
+        b = 0.1 * jax.nn.softplus(log_b)
+        radius = jnp.linalg.norm(positions, axis=-1)
+
+        if inverse:
+            discriminant = jnp.sqrt(a * a + 4.0 * b * radius)
+            old_radius = 2.0 * radius / (a + discriminant)
+            safe_radius = jnp.maximum(radius, 1e-8)
+            scale = jnp.where(
+                radius > 1e-8,
+                old_radius / safe_radius,
+                1.0 / a,
+            )
+            positions = positions * scale[:, None]
+            tangential = a + b * old_radius
+            radial = a + 2.0 * b * old_radius
+            log_det = -jnp.sum(
+                jnp.log(radial) + (self.dim - 1) * jnp.log(tangential)
+            )
+        else:
+            tangential = a + b * radius
+            radial = a + 2.0 * b * radius
+            positions = positions * tangential[:, None]
+            log_det = jnp.sum(
+                jnp.log(radial) + (self.dim - 1) * jnp.log(tangential)
+            )
+
+        return positions, log_det
+
+
 def make_flow(config: Config) -> tuple[Any, Any]:
     """Create forward and inverse Haiku transforms sharing parameter names."""
 
     def flow_apply(z: jax.Array, inverse: bool) -> tuple[jax.Array, jax.Array]:
         x = jnp.reshape(z, (config.n_particles, config.dim))
         log_det = jnp.asarray(0.0, dtype=z.dtype)
-        layer_order = range(config.num_layers - 1, -1, -1) if inverse else range(config.num_layers)
+        layer_order = (
+            range(config.num_layers - 1, -1, -1)
+            if inverse
+            else range(config.num_layers)
+        )
 
         for layer in layer_order:
+            if inverse:
+                radial_layer = RadialQuadraticLayer(
+                    config.n_particles,
+                    config.dim,
+                    name=f"radial_{layer}",
+                )
+                x, radial_log_det = radial_layer(x, inverse=True)
+                log_det = log_det + radial_log_det
+
             cond_indices, target_indices = _layer_indices(config.n_particles, layer)
             conditioner = EquivariantConditioner(
                 cond_indices=cond_indices,
@@ -195,11 +272,20 @@ def make_flow(config: Config) -> tuple[Any, Any]:
             target = x[jnp.asarray(target_indices, dtype=jnp.int32)]
             if inverse:
                 target = (target - shift) * jnp.exp(-scale[:, None])
-                log_det = log_det - jnp.sum(scale)
+                log_det = log_det - config.dim * jnp.sum(scale)
             else:
                 target = target * jnp.exp(scale[:, None]) + shift
-                log_det = log_det + jnp.sum(scale)
+                log_det = log_det + config.dim * jnp.sum(scale)
             x = x.at[jnp.asarray(target_indices, dtype=jnp.int32)].set(target)
+
+            if not inverse:
+                radial_layer = RadialQuadraticLayer(
+                    config.n_particles,
+                    config.dim,
+                    name=f"radial_{layer}",
+                )
+                x, radial_log_det = radial_layer(x, inverse=False)
+                log_det = log_det + radial_log_det
 
         return jnp.reshape(x, (-1,)), log_det
 
@@ -251,15 +337,45 @@ def _make_train_step(flow: Any, config: Config) -> Any:
 
     value_and_grad = jax.value_and_grad(loss_fn, has_aux=True)
 
+    def accumulated_value_and_grad(
+        params: hk.Params, z_batches: jax.Array
+    ) -> tuple[jax.Array, jax.Array, hk.Params]:
+        """Average gradients over independent micro-batches.
+
+        The objective is still the original, unmodified free energy.  Only
+        its Monte Carlo estimator is averaged before Adam sees the gradient.
+        """
+
+        def one_batch(z_batch: jax.Array) -> tuple[jax.Array, jax.Array, hk.Params]:
+            (loss, aux), grads = value_and_grad(params, z_batch)
+            return loss, jnp.stack(aux), grads
+
+        losses, aux_stack, grads_stack = jax.vmap(one_batch)(z_batches)
+        mean_grads = jax.tree_util.tree_map(
+            lambda leaf: jnp.mean(leaf, axis=0), grads_stack
+        )
+        return jnp.mean(losses), jnp.mean(aux_stack, axis=0), mean_grads
+
+    def evaluate_fn(
+        params: hk.Params, z_batch: jax.Array
+    ) -> tuple[jax.Array, jax.Array, jax.Array, jax.Array]:
+        loss, aux = loss_fn(params, z_batch)
+        return loss, aux[0], aux[1], aux[2]
+
     @jax.jit
     def step(
-        params: hk.Params, opt_state: optax.OptState, z_batch: jax.Array
+        params: hk.Params, opt_state: optax.OptState, z_batches: jax.Array
     ) -> tuple[hk.Params, optax.OptState, jax.Array, tuple[jax.Array, ...]]:
-        (loss, aux), grads = value_and_grad(params, z_batch)
+        loss, aux, grads = accumulated_value_and_grad(params, z_batches)
         updates, opt_state = optimizer.update(grads, opt_state, params)
-        return optax.apply_updates(params, updates), opt_state, loss, aux
+        return (
+            optax.apply_updates(params, updates),
+            opt_state,
+            loss,
+            (aux[0], aux[1], aux[2]),
+        )
 
-    return step, optimizer
+    return step, optimizer, jax.jit(evaluate_fn)
 
 
 def equivariance_error(
@@ -301,6 +417,14 @@ def train(config: Config) -> tuple[Any, Any, hk.Params, np.ndarray]:
         raise ValueError("message_steps 至少需要 1 次。")
     if config.batch_size < 1:
         raise ValueError("batch_size 必须为正数。")
+    if config.microbatches < 1:
+        raise ValueError("microbatches 必须为正数。")
+    if config.validation_size < 1:
+        raise ValueError("validation_size 必须为正数。")
+    if config.validation_every < 1:
+        raise ValueError("validation_every 必须为正数。")
+    if not 0.0 <= config.ema_decay < 1.0:
+        raise ValueError("ema_decay 必须满足 0 <= ema_decay < 1。")
 
     key = jax.random.PRNGKey(config.seed)
     key, init_key = jax.random.split(key)
@@ -308,28 +432,65 @@ def train(config: Config) -> tuple[Any, Any, hk.Params, np.ndarray]:
     dummy = jnp.zeros((config.n_particles * config.dim,), dtype=jnp.float64 if config.x64 else jnp.float32)
     params = forward.init(init_key, dummy)
 
-    step, optimizer = _make_train_step(forward, config)
+    step, optimizer, evaluate = _make_train_step(forward, config)
     opt_state = optimizer.init(params)
     history: list[list[float]] = []
+    key, validation_key = jax.random.split(key)
+    validation_z = jax.random.normal(
+        validation_key,
+        (config.validation_size, config.n_particles * config.dim),
+        dtype=dummy.dtype,
+    )
+    ema_loss: float | None = None
     start = time.perf_counter()
 
     for epoch in range(config.epochs):
         key, batch_key = jax.random.split(key)
-        z_batch = jax.random.normal(
+        z_batches = jax.random.normal(
             batch_key,
-            (config.batch_size, config.n_particles * config.dim),
+            (
+                config.microbatches,
+                config.batch_size,
+                config.n_particles * config.dim,
+            ),
             dtype=dummy.dtype,
         )
-        params, opt_state, loss, aux = step(params, opt_state, z_batch)
+        params, opt_state, loss, aux = step(params, opt_state, z_batches)
         loss_value = float(loss)
         std_value = float(aux[0])
-        history.append([loss_value, std_value / np.sqrt(config.batch_size)])
+        energy_value = float(aux[1])
+        logdet_value = float(aux[2])
+        ema_loss = loss_value if ema_loss is None else (
+            config.ema_decay * ema_loss + (1.0 - config.ema_decay) * loss_value
+        )
+
+        validation_loss_value = float("nan")
+        if epoch == 0 or (epoch + 1) % config.validation_every == 0:
+            validation_loss_value = float(evaluate(params, validation_z)[0])
+
+        effective_batch = config.batch_size * config.microbatches
+        history.append(
+            [
+                loss_value,
+                std_value / np.sqrt(effective_batch),
+                ema_loss,
+                energy_value,
+                logdet_value,
+                validation_loss_value,
+            ]
+        )
 
         if config.plot_every and (epoch == 0 or (epoch + 1) % config.plot_every == 0):
             elapsed = time.perf_counter() - start
+            validation_text = (
+                f" val={validation_loss_value: .6f}"
+                if np.isfinite(validation_loss_value)
+                else ""
+            )
             print(
                 f"epoch={epoch + 1:5d} loss={loss_value: .6f} "
-                f"energy={float(aux[1]): .6f} logdet={float(aux[2]): .6f} "
+                f"ema={ema_loss: .6f} energy={energy_value: .6f} "
+                f"logdet={logdet_value: .6f}{validation_text} "
                 f"time={elapsed: .1f}s"
             )
 
@@ -361,9 +522,17 @@ def save_plot(path: Path, history: np.ndarray, samples: np.ndarray) -> None:
     axes[1].set_xlabel("r")
     axes[1].set_ylabel("density")
     axes[1].grid(alpha=0.25)
-    axes[2].plot(history[:, 0], color="tab:blue")
+    axes[2].plot(history[:, 0], color="tab:blue", alpha=0.35, label="raw")
+    if history.shape[1] >= 3:
+        axes[2].plot(history[:, 2], color="tab:blue", linewidth=2.0, label="EMA")
+    if history.shape[1] >= 6:
+        validation = history[:, 5]
+        valid = np.isfinite(validation)
+        axes[2].plot(np.flatnonzero(valid), validation[valid], "o-", ms=3,
+                     color="tab:orange", label="fixed validation")
     axes[2].set_title("Variational free energy")
     axes[2].set_xlabel("Epoch")
+    axes[2].legend(frameon=False)
     axes[2].grid(alpha=0.25)
     fig.tight_layout()
     fig.savefig(path, dpi=140)
@@ -372,6 +541,7 @@ def save_plot(path: Path, history: np.ndarray, samples: np.ndarray) -> None:
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--beta", type=float, default=None)
     parser.add_argument("--epochs", type=int, default=None)
     parser.add_argument("--batch-size", type=int, default=None)
     parser.add_argument("--hidden-dim", type=int, default=None)
@@ -384,6 +554,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--grad-clip", type=float, default=None)
     parser.add_argument("--seed", type=int, default=None)
     parser.add_argument("--plot-every", type=int, default=None)
+    parser.add_argument("--microbatches", type=int, default=None)
+    parser.add_argument("--validation-size", type=int, default=None)
+    parser.add_argument("--validation-every", type=int, default=None)
+    parser.add_argument("--ema-decay", type=float, default=None)
     parser.add_argument("--x64", action="store_true")
     parser.add_argument("--output-dir", type=str, default=None)
     parser.add_argument("--smoke-test", action="store_true", help="运行 2 个小批次并检查等变性与可逆性")
@@ -393,6 +567,7 @@ def parse_args() -> argparse.Namespace:
 def main() -> None:
     args = parse_args()
     config = Config(
+        beta=args.beta if args.beta is not None else Config.beta,
         epochs=2 if args.smoke_test else (args.epochs or Config.epochs),
         batch_size=16 if args.smoke_test else (args.batch_size or Config.batch_size),
         hidden_dim=16 if args.smoke_test else (args.hidden_dim or Config.hidden_dim),
@@ -407,6 +582,10 @@ def main() -> None:
         x64=args.x64,
         plot_every=0 if args.smoke_test else (args.plot_every or Config.plot_every),
         output_dir=args.output_dir or Config.output_dir,
+        microbatches=2 if args.smoke_test else (args.microbatches or Config.microbatches),
+        validation_size=64 if args.smoke_test else (args.validation_size or Config.validation_size),
+        validation_every=1 if args.smoke_test else (args.validation_every or Config.validation_every),
+        ema_decay=args.ema_decay if args.ema_decay is not None else Config.ema_decay,
     )
     print(f"backend={jax.default_backend()} devices={jax.devices()}")
     print(f"config={asdict(config)}")
